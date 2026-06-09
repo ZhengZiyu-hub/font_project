@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Local datasets, generated features, and retrieval artifacts.
+input/
+output/
+
+# Local model checkpoints and common large ML artifacts.
+models/
+checkpoints/
+*.bin
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+
