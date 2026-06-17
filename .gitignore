@@ -8,9 +8,14 @@ venv/
 # Local datasets, generated features, and retrieval artifacts.
 input/
 output/
+!output/
+output/*
+!output/qformer_style_encoder/
+output/qformer_style_encoder/*
+!output/qformer_style_encoder/README.md
+*.zip
 
 # Local model checkpoints and common large ML artifacts.
-models/
 checkpoints/
 *.bin
 *.ckpt
@@ -18,3 +23,7 @@ checkpoints/
 *.pth
 *.safetensors
 
+# External downloaded model folders should stay out of git. Source code under
+# the project-level models/ package is tracked.
+pretrained/*
+!pretrained/README.md

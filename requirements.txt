@@ -1,6 +1,11 @@
 torch
+torchvision
 transformers
 accelerate
+diffusers
 qwen-vl-utils
 pillow
 numpy
+opencv-python
+sentencepiece
+protobuf
