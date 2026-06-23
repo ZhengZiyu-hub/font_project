@@ -1,0 +1,16 @@
+.git
+.agents
+.codex
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+outputs
+data
+datasets
+input
+pretrained
+third_party

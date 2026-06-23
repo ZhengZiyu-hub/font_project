@@ -8,6 +8,7 @@ venv/
 # Local datasets, generated features, and retrieval artifacts.
 input/
 output/
+outputs/
 !output/
 output/*
 !output/qformer_style_encoder/
@@ -27,3 +28,5 @@ checkpoints/
 # the project-level models/ package is tracked.
 pretrained/*
 !pretrained/README.md
+third_party/
+thirdparty/
