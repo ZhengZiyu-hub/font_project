@@ -1,58 +1,42 @@
-# 字体/书法图像生成项目
+# 字体图像生成项目
 
-## Project Overview
+## 项目简介
 
-本项目用于搭建一个自己的字体与书法图像生成工程框架。当前阶段只整理工程目录和基础配置，不迁移参考实现，也不实现复杂模型。
+这是一个字体/书法图像生成项目框架。当前代码包含基础工具、模型结构和 FLUX decoder 接入实验，用于跑通最小 forward 流程。
 
-## Directory Structure
+## 目录结构
 
 ```text
-font_project/
-├── configs/
-│   └── base.yaml
-├── src/
-│   ├── data/
-│   ├── models/
-│   ├── pipelines/
-│   ├── train/
-│   └── utils/
-├── outputs/
-├── README.md
-└── requirements.txt
+configs/        配置文件
+src/models/     模型模块
+src/utils/      配置、随机种子、图像保存、checkpoint 工具
+scripts/        简单测试脚本
+outputs/        输出目录
 ```
 
-## Installation
+## 环境安装
+
+推荐使用 Docker：
+
+```bash
+docker compose build
+docker compose run --rm app python -m compileall src
+```
+
+也可以直接安装依赖：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-也可以使用 Docker 管理环境：
+## 快速测试
 
 ```bash
-docker compose build
-docker compose run --rm app python -m compileall src
 docker compose run --rm app python scripts/test_model_forward.py
 ```
 
-Docker 构建使用 `requirements-docker.txt`，默认安装 CPU 版 PyTorch，适合当前的模型结构验证。
+测试会构造 dummy 输入，运行一次模型 forward，并打印输出图像 shape。
 
-## Usage
+## 当前状态
 
-基础配置位于：
-
-```bash
-configs/base.yaml
-```
-
-当前还没有训练和推理入口，后续阶段会逐步补齐数据读取、模型定义、训练流程和推理流程。
-
-## Current Status
-
-This repository currently provides the base project structure and configuration. Full model implementation, dataset training, and inference are still under development.
-
-## Notes
-
-- 当前阶段只做工程整理。
-- 不接入外部参考仓库作为运行依赖。
-- 输出文件统一放在 `outputs/`。
+当前阶段已经搭好基础工程和模型通路，可以完成 dummy forward。完整数据集训练、推理流程和高质量生成效果仍在开发中。

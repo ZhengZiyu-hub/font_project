@@ -12,7 +12,14 @@ data:
 model:
   name: font_pipeline
   image_channels: 3
-  hidden_dim: 128
+  image_encoder_path: /data/zhengziyu/models/siglip-so400m-patch14-384
+  condition_dim: 4096
+  image_embedding_dim: 1152
+  condition_tokens: 128
+  condition_heads: 8
+  condition_query_tokens: 32
+  decoder: flux
+  flux_model_path: /data/zhengziyu/models/FLUX.1-dev
 
 train:
   epochs: 1

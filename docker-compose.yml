@@ -7,6 +7,7 @@ services:
     working_dir: /workspace
     volumes:
       - .:/workspace
+      - /data/zhengziyu:/data/zhengziyu:ro
     environment:
       PYTHONPATH: /workspace
     command: bash

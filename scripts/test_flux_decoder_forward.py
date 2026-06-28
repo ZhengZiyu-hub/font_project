@@ -8,17 +8,17 @@ from src.models.font_model import FontModel
 
 
 def main() -> None:
-    batch_size = 2
-    height = width = 64
+    batch_size = 1
+    height = width = 32
 
     model = FontModel(
         image_channels=3,
         image_encoder_path=os.environ.get("FONT_IMAGE_ENCODER_PATH"),
-        condition_dim=64,
-        condition_tokens=4,
-        condition_heads=4,
-        condition_query_tokens=8,
-        num_heads=4,
+        condition_dim=32,
+        condition_tokens=2,
+        condition_heads=2,
+        condition_query_tokens=4,
+        num_heads=2,
         decoder_blocks=1,
         decoder_single_blocks=1,
         flux_model_path=None,
@@ -31,7 +31,7 @@ def main() -> None:
     with torch.no_grad():
         output_image = model(content_image, style_image)
 
-    print(f"output shape: {tuple(output_image.shape)}")
+    print(f"flux output shape: {tuple(output_image.shape)}")
     assert output_image.shape == (batch_size, 3, height, width)
 
 
