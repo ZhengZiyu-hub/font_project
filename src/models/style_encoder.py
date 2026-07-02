@@ -87,7 +87,17 @@ class StyleEncoder(nn.Module):
         # becomes [-1, 1].
         return (image - 0.5) / 0.5
 
-    def forward(self, style_image: torch.Tensor) -> torch.Tensor:
+    def encode_image_embedding(self, style_image: torch.Tensor) -> torch.Tensor:
+        """Return pooled SigLIP image embedding.
+
+        Input shape:
+            ``style_image`` is ``[B, 3, H, W]``.
+
+        Output shape:
+            pooled image embedding is ``[B, id_embeddings_dim]``. This is used
+            both by the style projection heads and by retrieval experiments.
+        """
+
         pixel_values = self._preprocess_tensor(style_image)
         encoder_dtype = next(self.image_encoder.parameters()).dtype
         pixel_values = pixel_values.to(device=style_image.device, dtype=encoder_dtype)
@@ -95,10 +105,11 @@ class StyleEncoder(nn.Module):
 
         if self.freeze_image_encoder:
             with torch.no_grad():
-                pooled = self.image_encoder(pixel_values).pooler_output
-        else:
-            pooled = self.image_encoder(pixel_values).pooler_output
+                return self.image_encoder(pixel_values).pooler_output
+        return self.image_encoder(pixel_values).pooler_output
 
+    def forward(self, style_image: torch.Tensor) -> torch.Tensor:
+        pooled = self.encode_image_embedding(style_image)
         pooled = pooled.to(dtype=self.image_proj_mlp.proj[0].weight.dtype)
         # Both heads return [B, num_tokens, cross_attention_dim]; summing keeps
         # the token count unchanged while combining global and query-conditioned

@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Font Model Structure</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --ink: #1d2530;
+      --muted: #697386;
+      --line: #d6dbe3;
+      --blue: #2563eb;
+      --green: #16803c;
+      --amber: #b45309;
+      --violet: #7c3aed;
+      --red: #dc2626;
+      --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr) 360px;
+      min-height: 100vh;
+    }
+
+    aside {
+      border-right: 1px solid var(--line);
+      background: #f0f3f7;
+      padding: 20px;
+    }
+
+    main {
+      min-width: 0;
+      padding: 22px;
+      overflow: auto;
+    }
+
+    .details {
+      min-width: 0;
+      border-left: 1px solid var(--line);
+      background: var(--panel);
+      padding: 22px;
+      overflow: auto;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      line-height: 1.18;
+    }
+
+    .subtle {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      margin: 0 0 18px;
+    }
+
+    .section-title {
+      margin: 20px 0 8px;
+      color: #475569;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .node-list {
+      display: grid;
+      gap: 6px;
+    }
+
+    .node-list button {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 9px 10px;
+      text-align: left;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .node-list button.active {
+      border-color: #111827;
+      font-weight: 700;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+
+    .toolbar h2 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .key {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .diagram {
+      min-width: 900px;
+      min-height: 700px;
+      position: relative;
+      background:
+        linear-gradient(#eef2f7 1px, transparent 1px),
+        linear-gradient(90deg, #eef2f7 1px, transparent 1px);
+      background-size: 28px 28px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    svg.links {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .flow-node {
+      position: absolute;
+      width: 188px;
+      min-height: 90px;
+      border: 1px solid var(--line);
+      border-left-width: 5px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.96);
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+      padding: 11px 12px;
+      cursor: pointer;
+      transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+    }
+
+    .flow-node:hover,
+    .flow-node.active {
+      transform: translateY(-2px);
+      border-color: #111827;
+      box-shadow: 0 12px 26px rgba(15, 23, 42, 0.13);
+    }
+
+    .flow-node h3 {
+      margin: 0 0 7px;
+      font-size: 14px;
+      line-height: 1.25;
+    }
+
+    .shape {
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .encoder { border-left-color: var(--green); }
+    .projection { border-left-color: var(--amber); }
+    .decoder { border-left-color: var(--violet); }
+    .io { border-left-color: var(--blue); }
+    .adapter { border-left-color: var(--red); }
+
+    .details h2 {
+      margin: 0 0 6px;
+      font-size: 20px;
+    }
+
+    .badge {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 9px;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 14px;
+    }
+
+    dl {
+      margin: 0;
+      display: grid;
+      gap: 12px;
+    }
+
+    dt {
+      color: #475569;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    dd {
+      margin: 0;
+      color: var(--ink);
+      line-height: 1.55;
+      font-size: 14px;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 5px;
+      padding: 2px 5px;
+    }
+
+    .note {
+      border-top: 1px solid var(--line);
+      margin-top: 18px;
+      padding-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    @media (max-width: 1120px) {
+      .app {
+        grid-template-columns: 240px minmax(0, 1fr);
+      }
+      .details {
+        grid-column: 1 / -1;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+    }
+
+    @media (max-width: 760px) {
+      .app {
+        display: block;
+      }
+      aside,
+      main,
+      .details {
+        padding: 16px;
+      }
+      aside {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .toolbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .diagram {
+        min-width: 820px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <h1>Font Model Structure</h1>
+      <p class="subtle">当前模型只保留 FLUX decoder 通路。点击节点查看源码位置、shape 和作用。</p>
+
+      <div class="section-title">Nodes</div>
+      <div class="node-list" id="nodeList"></div>
+    </aside>
+
+    <main>
+      <div class="toolbar">
+        <h2>FLUX decoder path</h2>
+        <div class="legend">
+          <span class="key"><span class="dot" style="background: var(--blue)"></span>I/O</span>
+          <span class="key"><span class="dot" style="background: var(--green)"></span>Encoder</span>
+          <span class="key"><span class="dot" style="background: var(--amber)"></span>Projection</span>
+          <span class="key"><span class="dot" style="background: var(--violet)"></span>Decoder</span>
+          <span class="key"><span class="dot" style="background: var(--red)"></span>Adapter</span>
+        </div>
+      </div>
+      <section class="diagram" id="diagram" aria-label="model flow diagram">
+        <svg class="links" id="links" viewBox="0 0 900 700" preserveAspectRatio="none"></svg>
+      </section>
+    </main>
+
+    <section class="details" id="details"></section>
+  </div>
+
+  <script>
+    const nodes = {
+      contentInput: {
+        title: "content_image",
+        type: "io",
+        file: "src/models/font_model.py",
+        shape: "[B, 3, H, W]",
+        role: "待生成字符的结构图像。当前阶段同时作为 FLUX 适配层的初始 latent canvas。",
+        io: "输入来自 FontModel.forward(content_image, style_image)。"
+      },
+      styleInput: {
+        title: "style_image",
+        type: "io",
+        file: "src/models/font_model.py",
+        shape: "[B, 3, H, W]",
+        role: "参考风格图像，用来抽取笔触、纹理和视觉风格条件。",
+        io: "输入来自 FontModel.forward(content_image, style_image)。"
+      },
+      contentPrior: {
+        title: "FLUX img2img prior",
+        type: "adapter",
+        file: "src/models/flux_decoder.py",
+        shape: "[B, 3, H, W] -> VAE packed latents",
+        role: "content image 不再经过自写 ContentEncoder，而是作为官方 FluxImg2ImgPipeline 的起始图像进入 VAE latent prior。",
+        io: "FontModel.forward_baseline 传入 FluxImageDecoder.forward(image=content_image)。"
+      },
+      styleEncoder: {
+        title: "StyleEncoder",
+        type: "encoder",
+        file: "src/models/style_encoder.py",
+        shape: "[B, 3, H, W] -> [B, N, 4096]",
+        role: "SigLIP 视觉塔提取 pooled image embedding，然后 MLP projection 与 QFormer projection 相加。",
+        io: "输出直接作为风格条件 tokens 注入 FLUX。"
+      },
+      mlpProjection: {
+        title: "MLPProjModel",
+        type: "projection",
+        file: "src/models/projection.py",
+        shape: "[B, 1152] -> [B, N, 4096]",
+        role: "把单个 pooled image embedding 展开为 decoder cross-attention tokens。",
+        io: "StyleEncoder 内部调用。"
+      },
+      qformerProjection: {
+        title: "QFormerProjModel",
+        type: "projection",
+        file: "src/models/projection.py",
+        shape: "[B, 1152] -> [B, N, 4096]",
+        role: "learnable query tokens 通过 cross-attention 读取投影后的图像 embedding，得到更丰富的条件 tokens。",
+        io: "与 MLP projection 输出相加。"
+      },
+      fluxDecoder: {
+        title: "FluxImageDecoder",
+        type: "decoder",
+        file: "src/models/flux_decoder.py",
+        shape: "prompt/style condition + optional image prior -> [B, 3, H, W]",
+        role: "真实 Diffusers FLUX 后端，复用 FluxPipeline/FluxImg2ImgPipeline、scheduler denoising loop 和 VAE decode。",
+        io: "FontModel 固定调用该 decoder。"
+      },
+      patchAdapter: {
+        title: "VAE latent packing",
+        type: "adapter",
+        file: "src/models/flux_decoder.py",
+        shape: "image prior -> packed latents",
+        role: "官方 FLUX img2img 路径把图像编码进 VAE latent，并按 FLUX 规则 pack 成 latent tokens。",
+        io: "由 FluxImg2ImgPipeline 内部处理。"
+      },
+      conditionAdapter: {
+        title: "condition concat",
+        type: "adapter",
+        file: "src/models/flux_decoder.py",
+        shape: "text tokens + style tokens",
+        role: "FLUX 官方 text embeddings 与 style tokens 拼接后作为 encoder_hidden_states。",
+        io: "对应 FluxImageDecoder.encode_prompt。"
+      },
+      timestep: {
+        title: "timestep",
+        type: "adapter",
+        file: "src/models/flux_decoder.py",
+        shape: "[B]",
+        role: "Diffusers scheduler 产生 timesteps，进入 FLUX transformer 的时间嵌入路径。",
+        io: "由 FluxPipeline/FluxImg2ImgPipeline denoising loop 管理。"
+      },
+      fluxTransformer: {
+        title: "FluxTransformer2DModel",
+        type: "decoder",
+        file: "diffusers.FluxTransformer2DModel",
+        shape: "latents + condition + timestep + ids -> noise_pred",
+        role: "真实 FLUX transformer denoiser，从本地 FLUX 权重加载。",
+        io: "由 FluxImageDecoder.forward 调用。"
+      },
+      output: {
+        title: "output_image",
+        type: "io",
+        file: "src/models/font_model.py",
+        shape: "[B, 3, H, W]",
+        role: "模型输出图像。",
+        io: "FontModel.forward 的返回值。"
+      }
+    };
+
+    const layout = {
+      active: [
+        "contentInput", "styleInput", "contentPrior", "styleEncoder",
+        "mlpProjection", "qformerProjection", "patchAdapter",
+        "conditionAdapter", "timestep", "fluxDecoder", "fluxTransformer", "output"
+      ],
+      positions: {
+        contentInput: [42, 90],
+        styleInput: [42, 470],
+        contentPrior: [250, 90],
+        styleEncoder: [250, 470],
+        mlpProjection: [458, 160],
+        qformerProjection: [458, 400],
+        patchAdapter: [250, 280],
+        conditionAdapter: [666, 280],
+        timestep: [666, 90],
+        fluxDecoder: [666, 470],
+        fluxTransformer: [666, 610],
+        output: [42, 610]
+      },
+      links: [
+        ["contentInput", "contentPrior"],
+        ["styleInput", "styleEncoder"],
+        ["styleEncoder", "mlpProjection"],
+        ["styleEncoder", "qformerProjection"],
+        ["contentPrior", "patchAdapter"],
+        ["mlpProjection", "conditionAdapter"],
+        ["qformerProjection", "conditionAdapter"],
+        ["patchAdapter", "fluxDecoder"],
+        ["conditionAdapter", "fluxDecoder"],
+        ["timestep", "fluxDecoder"],
+        ["fluxDecoder", "fluxTransformer"],
+        ["fluxTransformer", "fluxDecoder"],
+        ["fluxDecoder", "output"]
+      ]
+    };
+
+    let selectedNode = "contentInput";
+
+    const diagram = document.getElementById("diagram");
+    const linksSvg = document.getElementById("links");
+    const details = document.getElementById("details");
+    const nodeList = document.getElementById("nodeList");
+
+    function nodeCenter(id) {
+      const [x, y] = layout.positions[id];
+      return [x + 94, y + 45];
+    }
+
+    function drawLinks() {
+      linksSvg.innerHTML = "";
+      for (const [from, to] of layout.links) {
+        const [x1, y1] = nodeCenter(from);
+        const [x2, y2] = nodeCenter(to);
+        const mid = (x1 + x2) / 2;
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`);
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", "#94a3b8");
+        path.setAttribute("stroke-width", "2");
+        path.setAttribute("stroke-linecap", "round");
+        linksSvg.appendChild(path);
+      }
+    }
+
+    function renderNodes() {
+      diagram.querySelectorAll(".flow-node").forEach(node => node.remove());
+      for (const id of layout.active) {
+        const item = nodes[id];
+        const [x, y] = layout.positions[id];
+        const el = document.createElement("button");
+        el.type = "button";
+        el.className = `flow-node ${item.type}${id === selectedNode ? " active" : ""}`;
+        el.style.left = `${x}px`;
+        el.style.top = `${y}px`;
+        el.dataset.nodeId = id;
+        el.innerHTML = `<h3>${item.title}</h3><div class="shape">${item.shape}</div>`;
+        el.addEventListener("click", () => selectNode(id));
+        diagram.appendChild(el);
+      }
+    }
+
+    function renderNodeList() {
+      nodeList.innerHTML = "";
+      for (const id of layout.active) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = nodes[id].title;
+        button.className = id === selectedNode ? "active" : "";
+        button.addEventListener("click", () => selectNode(id));
+        nodeList.appendChild(button);
+      }
+    }
+
+    function renderDetails(id) {
+      const item = nodes[id];
+      details.innerHTML = `
+        <h2>${item.title}</h2>
+        <span class="badge">${item.type}</span>
+        <dl>
+          <div>
+            <dt>Source</dt>
+            <dd><code>${item.file}</code></dd>
+          </div>
+          <div>
+            <dt>Shape</dt>
+            <dd><code>${item.shape}</code></dd>
+          </div>
+          <div>
+            <dt>Role</dt>
+            <dd>${item.role}</dd>
+          </div>
+          <div>
+            <dt>Connection</dt>
+            <dd>${item.io}</dd>
+          </div>
+        </dl>
+        <div class="note">
+          当前页面是静态结构图，不运行模型。真实 smoke test 位于
+          <code>scripts/test_model_forward.py</code>。
+        </div>
+      `;
+    }
+
+    function selectNode(id) {
+      selectedNode = id;
+      render();
+    }
+
+    function render() {
+      drawLinks();
+      renderNodes();
+      renderNodeList();
+      renderDetails(selectedNode);
+    }
+
+    render();
+  </script>
+</body>
+</html>

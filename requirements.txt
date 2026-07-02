@@ -9,3 +9,4 @@ numpy
 opencv-python
 sentencepiece
 protobuf
+faiss-cpu
