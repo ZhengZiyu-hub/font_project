@@ -37,6 +37,3 @@ docker compose run --rm app python scripts/test_model_forward.py
 
 测试会构造 dummy 输入，运行一次模型 forward，并打印输出图像 shape。
 
-## 当前状态
-
-当前阶段已经搭好基础工程和模型通路，可以完成 dummy forward。完整数据集训练、推理流程和高质量生成效果仍在开发中。
