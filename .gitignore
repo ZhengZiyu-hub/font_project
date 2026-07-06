@@ -6,6 +6,7 @@ venv/
 .vscode/
 
 # Local datasets, generated features, and retrieval artifacts.
+assets/
 input/
 output/
 outputs/
