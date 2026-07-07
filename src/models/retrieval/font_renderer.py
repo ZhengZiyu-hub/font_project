@@ -45,7 +45,7 @@ def render_text_with_font(
             canvas height.
 
     Returns:
-        ``content_image`` tensor with shape ``[3, image_size, image_size]`` in
+        rendered glyph tensor with shape ``[3, image_size, image_size]`` in
         ``[-1, 1]``. Black glyphs are rendered on a white background.
     """
 

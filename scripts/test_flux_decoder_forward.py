@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 import torch
 
 from src.models.font_model import FontModel
@@ -9,30 +7,25 @@ from src.models.font_model import FontModel
 
 def main() -> None:
     batch_size = 1
-    height = width = 32
 
-    model = FontModel(
-        image_channels=3,
-        image_encoder_path=os.environ.get("FONT_IMAGE_ENCODER_PATH"),
-        condition_dim=32,
-        condition_tokens=2,
-        condition_heads=2,
-        condition_query_tokens=4,
-        num_heads=2,
-        decoder_blocks=1,
-        decoder_single_blocks=1,
-        flux_model_path=None,
-    )
+    model = FontModel(use_glyph_prior=False, use_retrieval_prior=False)
     model.eval()
 
-    content_image = torch.randn(batch_size, 3, height, width)
-    style_image = torch.randn(batch_size, 3, height, width)
+    text_tokens, pooled, txt_ids = model.encode_text(["baseline glyph"])
+    latents, img_ids = model.prepare_latents(batch_size)
+    style_tokens = torch.empty(batch_size, 0, text_tokens.shape[-1], device=text_tokens.device, dtype=text_tokens.dtype)
+    timestep = torch.zeros(batch_size, device=text_tokens.device, dtype=text_tokens.dtype)
+    ids = {
+        "txt_ids": txt_ids,
+        "img_ids": img_ids,
+        "pooled_projections": pooled,
+    }
 
     with torch.no_grad():
-        output_image = model(content_image, style_image)
+        output = model.forward_baseline(latents, text_tokens, style_tokens, timestep, ids)
 
-    print(f"flux output shape: {tuple(output_image.shape)}")
-    assert output_image.shape == (batch_size, 3, height, width)
+    print(f"flux output shape: {tuple(output.shape)}")
+    assert output.shape == latents.shape
 
 
 if __name__ == "__main__":

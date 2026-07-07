@@ -3,25 +3,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
 import torch
 from torch import nn
+
+from .flux_routed_attention import build_routed_flux_processors
 
 
 @dataclass
 class FluxDecoderConfig:
-    """Configuration for the Diffusers FLUX backend."""
+    """Configuration for the Diffusers FLUX transformer backend."""
 
     pretrained_model_name_or_path: str
-    image_channels: int = 3
     hidden_dim: int = 4096
     height: int = 1024
     width: int = 1024
-    num_inference_steps: int = 28
-    guidance_scale: float = 3.5
     max_sequence_length: int = 512
     torch_dtype: str = "bfloat16"
     device: str | None = None
+    use_routed_conditioning: bool = True
+    routed_initial_gates: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
 
 def _resolve_dtype(name: str) -> torch.dtype:
@@ -35,40 +35,41 @@ def _resolve_dtype(name: str) -> torch.dtype:
 
 
 class FluxImageDecoder(nn.Module):
-    """Full Diffusers FLUX backend.
+    """Token-level FLUX transformer wrapper.
 
-    This module wraps the actual FLUX pipeline components:
+    Unified forward contract:
 
-    prompt/style/content conditions
-        -> T5/CLIP prompt embeddings + extra condition tokens
-        -> packed FLUX latents
-        -> FlowMatch scheduler denoising loop
-        -> VAE decode
-        -> image tensor ``[B, 3, H, W]``.
+    ``forward(latents, text_tokens, style_tokens, glyph_tokens, timestep, ids)``
 
-    ``extra_condition_tokens`` may contain style tokens, retrieved-content
-    tokens, or both. They are concatenated to the official FLUX text embeddings
-    along the sequence dimension and enter ``FluxTransformer2DModel`` through
-    ``encoder_hidden_states``.
+    Shapes:
+        latents: ``[B, L_img, C]`` packed FLUX latents.
+        text_tokens: ``[B, L_text, D]`` FLUX text embeddings.
+        style_tokens: ``[B, L_style, D_style]`` style condition tokens.
+        glyph_tokens: optional ``[B, L_glyph, D_glyph]`` glyph prior tokens.
+            In mode A this is ``None`` and no glyph branch is added.
+        timestep: ``[B]`` or scalar timestep.
+        ids: dictionary containing at least ``img_ids`` and optionally
+            ``txt_ids``, ``pooled_projections`` and ``guidance``.
+
+    Output:
+        predicted noise/velocity tokens with shape matching ``latents``.
     """
 
     def __init__(self, config: FluxDecoderConfig) -> None:
         super().__init__()
         if not config.pretrained_model_name_or_path:
-            raise ValueError("FluxImageDecoder now requires a real Diffusers FLUX checkpoint path.")
+            raise ValueError("FluxImageDecoder requires a real Diffusers FLUX checkpoint path.")
 
         self.config = config
         dtype = _resolve_dtype(config.torch_dtype)
         try:
-            from diffusers import FluxImg2ImgPipeline, FluxPipeline
+            from diffusers import FluxPipeline
         except ImportError as exc:
             raise ImportError("FluxImageDecoder requires diffusers with FluxPipeline support.") from exc
 
         self.pipe = FluxPipeline.from_pretrained(config.pretrained_model_name_or_path, torch_dtype=dtype)
-        self.img2img_pipe = FluxImg2ImgPipeline(**self.pipe.components)
         if config.device is not None:
             self.pipe.to(config.device)
-            self.img2img_pipe.to(config.device)
 
         self.transformer = self.pipe.transformer
         self.scheduler = self.pipe.scheduler
@@ -78,6 +79,23 @@ class FluxImageDecoder(nn.Module):
         self.to_flux_condition = (
             nn.Identity() if config.hidden_dim == flux_condition_dim else nn.Linear(config.hidden_dim, flux_condition_dim)
         )
+        self.pooled_projection_dim = int(self.transformer.config.pooled_projection_dim)
+        self.use_routed_conditioning = config.use_routed_conditioning
+        self.routed_processors = None
+        if self.use_routed_conditioning:
+            self.routed_processors = build_routed_flux_processors(
+                list(self.transformer.attn_processors.keys()),
+                initial_gates=config.routed_initial_gates,
+            )
+            self.transformer.set_attn_processor(dict(self.routed_processors))
+
+    @property
+    def device(self) -> torch.device:
+        return self.pipe._execution_device
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.transformer.dtype
 
     def set_trainable(
         self,
@@ -85,17 +103,16 @@ class FluxImageDecoder(nn.Module):
         text_encoders: bool = False,
         vae: bool = False,
         condition_projection: bool = True,
+        routed_conditioning: bool = True,
     ) -> None:
-        """Select trainable FLUX components for fine-tuning.
-
-        Full FLUX fine-tuning usually trains ``transformer`` or LoRA adapters
-        on it, keeps text encoders frozen, and keeps the VAE frozen. This method
-        only toggles ``requires_grad``; optimizer construction remains in the
-        training script.
-        """
+        """Select trainable FLUX components for fine-tuning."""
 
         for param in self.transformer.parameters():
             param.requires_grad_(transformer)
+        if self.routed_processors is not None:
+            for processor in self.routed_processors.values():
+                for param in processor.parameters():
+                    param.requires_grad_(routed_conditioning)
         if self.pipe.text_encoder is not None:
             for param in self.pipe.text_encoder.parameters():
                 param.requires_grad_(text_encoders)
@@ -114,258 +131,147 @@ class FluxImageDecoder(nn.Module):
             self.pipe.text_encoder_2.train(text_encoders)
         self.vae.train(vae)
 
-    @property
-    def device(self) -> torch.device:
-        return self.pipe._execution_device
+    def empty_glyph_tokens(self, batch_size: int, dim: int | None = None, device=None, dtype=None) -> torch.Tensor:
+        """Create required glyph placeholder with shape ``[B, 0, D]``."""
 
-    @property
-    def dtype(self) -> torch.dtype:
-        return self.transformer.dtype
+        dim = dim or int(self.transformer.config.joint_attention_dim)
+        return torch.empty(batch_size, 0, dim, device=device or self.device, dtype=dtype or self.dtype)
 
-    def _condition_ids(self, length: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-        """Build neutral FLUX ids for additional non-image condition tokens."""
-
-        return torch.zeros(length, 3, device=device, dtype=dtype)
-
-    def encode_prompt(
+    def encode_text(
         self,
         prompt: str | list[str],
-        extra_condition_tokens: torch.Tensor | None = None,
         num_images_per_prompt: int = 1,
         max_sequence_length: int | None = None,
         lora_scale: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Encode text and append project-specific condition tokens.
+        """Use Diffusers FLUX prompt encoders to create text tokens.
 
-        Shapes:
-            prompt_embeds: ``[B, T_text, 4096]``
-            extra_condition_tokens: ``[B, T_extra, D]``
-            output prompt embeds: ``[B, T_text + T_extra, 4096]``
+        Returns:
+            text_tokens, pooled_projections, txt_ids.
         """
 
-        device = self.device
-        prompt_embeds, pooled_prompt_embeds, text_ids = self.pipe.encode_prompt(
+        prompt_tokens, pooled, txt_ids = self.pipe.encode_prompt(
             prompt=prompt,
             prompt_2=prompt,
-            device=device,
+            device=self.device,
             num_images_per_prompt=num_images_per_prompt,
             max_sequence_length=max_sequence_length or self.config.max_sequence_length,
             lora_scale=lora_scale,
         )
+        return prompt_tokens, pooled, txt_ids
 
-        if extra_condition_tokens is None:
-            return prompt_embeds, pooled_prompt_embeds, text_ids
-
-        extra_condition_tokens = extra_condition_tokens.to(device=device, dtype=prompt_embeds.dtype)
-        extra_condition_tokens = self.to_flux_condition(extra_condition_tokens)
-        if extra_condition_tokens.shape[0] != prompt_embeds.shape[0]:
-            raise ValueError(
-                f"extra condition batch {extra_condition_tokens.shape[0]} does not match prompt batch {prompt_embeds.shape[0]}"
-            )
-
-        extra_ids = self._condition_ids(extra_condition_tokens.shape[1], device, text_ids.dtype)
-        prompt_embeds = torch.cat([prompt_embeds, extra_condition_tokens], dim=1)
-        text_ids = torch.cat([text_ids, extra_ids], dim=0)
-        return prompt_embeds, pooled_prompt_embeds, text_ids
-
-    @torch.no_grad()
-    def forward(
+    def prepare_latents(
         self,
-        prompt: str | list[str],
-        extra_condition_tokens: torch.Tensor | None = None,
-        image: torch.Tensor | None = None,
-        height: int | None = None,
-        width: int | None = None,
-        strength: float = 0.6,
-        num_inference_steps: int | None = None,
-        guidance_scale: float | None = None,
+        batch_size: int,
         generator: torch.Generator | list[torch.Generator] | None = None,
         latents: torch.Tensor | None = None,
-        output_type: str = "pt",
-        joint_attention_kwargs: dict[str, Any] | None = None,
-    ) -> torch.Tensor:
-        """Run the real FLUX denoising loop and return image tensor."""
-
-        if image is not None:
-            return self.forward_img2img(
-                prompt=prompt,
-                image=image,
-                extra_condition_tokens=extra_condition_tokens,
-                height=height,
-                width=width,
-                strength=strength,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                generator=generator,
-                latents=latents,
-                output_type=output_type,
-                joint_attention_kwargs=joint_attention_kwargs,
-            )
-
-        from diffusers.pipelines.flux.pipeline_flux import calculate_shift, retrieve_timesteps
-
-        height = height or self.config.height
-        width = width or self.config.width
-        num_inference_steps = num_inference_steps or self.config.num_inference_steps
-        guidance_scale = guidance_scale if guidance_scale is not None else self.config.guidance_scale
-        joint_attention_kwargs = joint_attention_kwargs or {}
-
-        prompt_list = [prompt] if isinstance(prompt, str) else prompt
-        batch_size = len(prompt_list)
-        device = self.device
-
-        prompt_embeds, pooled_prompt_embeds, text_ids = self.encode_prompt(
-            prompt_list,
-            extra_condition_tokens=extra_condition_tokens,
-        )
+        height: int | None = None,
+        width: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Create packed FLUX latents and image ids via Diffusers helpers."""
 
         num_channels_latents = self.transformer.config.in_channels // 4
-        latents, latent_image_ids = self.pipe.prepare_latents(
+        return self.pipe.prepare_latents(
             batch_size,
             num_channels_latents,
-            height,
-            width,
-            prompt_embeds.dtype,
-            device,
+            height or self.config.height,
+            width or self.config.width,
+            self.dtype,
+            self.device,
             generator,
             latents,
         )
 
-        sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
-        if hasattr(self.scheduler.config, "use_flow_sigmas") and self.scheduler.config.use_flow_sigmas:
-            sigmas = None
+    def _project_optional_tokens(self, tokens: torch.Tensor, batch_size: int, name: str) -> torch.Tensor:
+        if tokens.ndim != 3:
+            raise ValueError(f"{name} must have shape [B, L, D], got {tuple(tokens.shape)}")
+        if tokens.shape[0] != batch_size:
+            raise ValueError(f"{name} batch {tokens.shape[0]} does not match latent batch {batch_size}")
+        if tokens.shape[1] == 0:
+            return tokens.to(device=self.device, dtype=self.dtype)
+        return self.to_flux_condition(tokens.to(device=self.device, dtype=self.dtype))
 
-        image_seq_len = latents.shape[1]
-        mu = calculate_shift(
-            image_seq_len,
-            self.scheduler.config.get("base_image_seq_len", 256),
-            self.scheduler.config.get("max_image_seq_len", 4096),
-            self.scheduler.config.get("base_shift", 0.5),
-            self.scheduler.config.get("max_shift", 1.15),
-        )
-        timesteps, num_inference_steps = retrieve_timesteps(
-            self.scheduler,
-            num_inference_steps,
-            device,
-            sigmas=sigmas,
-            mu=mu,
-        )
+    def _condition_ids(self, length: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        return torch.zeros(length, 3, device=device, dtype=dtype)
 
-        guidance = None
-        if self.transformer.config.guidance_embeds:
-            guidance = torch.full([latents.shape[0]], guidance_scale, device=device, dtype=torch.float32)
-
-        self.scheduler.set_begin_index(0)
-        for timestep_value in timesteps:
-            timestep = timestep_value.expand(latents.shape[0]).to(latents.dtype)
-            noise_pred = self.transformer(
-                hidden_states=latents,
-                timestep=timestep / 1000,
-                guidance=guidance,
-                pooled_projections=pooled_prompt_embeds,
-                encoder_hidden_states=prompt_embeds,
-                txt_ids=text_ids,
-                img_ids=latent_image_ids,
-                joint_attention_kwargs=joint_attention_kwargs,
-                return_dict=False,
-            )[0]
-            latents = self.scheduler.step(noise_pred, timestep_value, latents, return_dict=False)[0]
-
-        if output_type == "latent":
-            return latents
-
-        latents = self.pipe._unpack_latents(latents, height, width, self.pipe.vae_scale_factor)
-        latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
-        image = self.vae.decode(latents, return_dict=False)[0]
-        return self.pipe.image_processor.postprocess(image, output_type=output_type)
-
-    @torch.no_grad()
-    def forward_img2img(
+    def _build_condition_tokens(
         self,
-        prompt: str | list[str],
-        image: torch.Tensor,
-        extra_condition_tokens: torch.Tensor | None = None,
-        height: int | None = None,
-        width: int | None = None,
-        strength: float = 0.6,
-        num_inference_steps: int | None = None,
-        guidance_scale: float | None = None,
-        generator: torch.Generator | list[torch.Generator] | None = None,
-        latents: torch.Tensor | None = None,
-        output_type: str = "pt",
-        joint_attention_kwargs: dict[str, Any] | None = None,
-    ) -> torch.Tensor:
-        """Run official FLUX img2img using content image as latent prior."""
+        text_tokens: torch.Tensor,
+        style_tokens: torch.Tensor,
+        glyph_tokens: torch.Tensor | None,
+        ids: dict[str, torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int, int]]:
+        batch_size = text_tokens.shape[0]
+        text_tokens = text_tokens.to(device=self.device, dtype=self.dtype)
+        style_tokens = self._project_optional_tokens(style_tokens, batch_size, "style_tokens")
+        if glyph_tokens is None:
+            glyph_tokens = torch.empty(batch_size, 0, text_tokens.shape[-1], device=self.device, dtype=self.dtype)
+        else:
+            glyph_tokens = self._project_optional_tokens(glyph_tokens, batch_size, "glyph_tokens")
 
-        height = height or self.config.height
-        width = width or self.config.width
-        num_inference_steps = num_inference_steps or self.config.num_inference_steps
-        guidance_scale = guidance_scale if guidance_scale is not None else self.config.guidance_scale
+        branch_lengths = (text_tokens.shape[1], style_tokens.shape[1], glyph_tokens.shape[1])
+        condition_tokens = torch.cat([text_tokens, style_tokens, glyph_tokens], dim=1)
 
-        prompt_list = [prompt] if isinstance(prompt, str) else prompt
-        prompt_embeds, pooled_prompt_embeds, _ = self.encode_prompt(
-            prompt_list,
-            extra_condition_tokens=extra_condition_tokens,
-        )
+        txt_ids = ids.get("txt_ids")
+        if txt_ids is None:
+            txt_ids = self._condition_ids(text_tokens.shape[1], self.device, self.dtype)
+        else:
+            txt_ids = txt_ids.to(device=self.device, dtype=self.dtype)
 
-        # Diffusers img2img accepts tensors in [0, 1]. Project images in
-        # [-1, 1] into that range while leaving [0, 1] tensors untouched.
-        image = image.to(device=self.device, dtype=prompt_embeds.dtype)
-        if image.detach().amin() < 0:
-            image = (image + 1.0) * 0.5
-        image = image.clamp(0.0, 1.0)
+        extra_len = style_tokens.shape[1] + glyph_tokens.shape[1]
+        if extra_len:
+            txt_ids = torch.cat([txt_ids, self._condition_ids(extra_len, self.device, txt_ids.dtype)], dim=0)
+        return condition_tokens, txt_ids, branch_lengths
 
-        result = self.img2img_pipe(
-            prompt=None,
-            prompt_2=None,
-            image=image,
-            height=height,
-            width=width,
-            strength=strength,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            generator=generator,
-            latents=latents,
-            prompt_embeds=prompt_embeds,
-            pooled_prompt_embeds=pooled_prompt_embeds,
-            output_type=output_type,
-            return_dict=True,
-            joint_attention_kwargs=joint_attention_kwargs or {},
-            max_sequence_length=self.config.max_sequence_length,
-        )
-        return result.images
-
-    def training_denoise_forward(
+    def forward(
         self,
         latents: torch.Tensor,
-        prompt_embeds: torch.Tensor,
-        pooled_prompt_embeds: torch.Tensor,
-        text_ids: torch.Tensor,
-        latent_image_ids: torch.Tensor,
+        text_tokens: torch.Tensor,
+        style_tokens: torch.Tensor,
+        glyph_tokens: torch.Tensor | None,
         timestep: torch.Tensor,
-        guidance_scale: float | None = None,
-        joint_attention_kwargs: dict[str, Any] | None = None,
+        ids: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """Trainable transformer forward for fine-tuning loops.
+        """Run one FLUX transformer denoising step with unified conditions."""
 
-        This is the hook a training script should call after preparing noisy
-        packed latents and flow-matching targets. It returns predicted velocity
-        or noise with the same shape as ``latents``.
-        """
+        latents = latents.to(device=self.device, dtype=self.dtype)
+        condition_tokens, txt_ids, branch_lengths = self._build_condition_tokens(
+            text_tokens, style_tokens, glyph_tokens, ids
+        )
 
-        guidance = None
-        if self.transformer.config.guidance_embeds:
-            value = guidance_scale if guidance_scale is not None else self.config.guidance_scale
-            guidance = torch.full([latents.shape[0]], value, device=latents.device, dtype=torch.float32)
+        img_ids = ids.get("img_ids")
+        if img_ids is None:
+            raise ValueError("ids must include img_ids for FLUX positional encoding.")
+        img_ids = img_ids.to(device=self.device, dtype=self.dtype)
+
+        pooled = ids.get("pooled_projections")
+        if pooled is None:
+            pooled = torch.zeros(latents.shape[0], self.pooled_projection_dim, device=self.device, dtype=self.dtype)
+        else:
+            pooled = pooled.to(device=self.device, dtype=self.dtype)
+
+        guidance = ids.get("guidance")
+        if guidance is None and self.transformer.config.guidance_embeds:
+            guidance = torch.full([latents.shape[0]], 1.0, device=self.device, dtype=torch.float32)
+        elif guidance is not None:
+            guidance = guidance.to(device=self.device, dtype=torch.float32)
+
+        timestep = timestep.to(device=self.device, dtype=self.dtype)
+        if timestep.ndim == 0:
+            timestep = timestep.expand(latents.shape[0])
+
+        joint_attention_kwargs = dict(ids.get("joint_attention_kwargs", {}))
+        if self.use_routed_conditioning:
+            joint_attention_kwargs["branch_lengths"] = branch_lengths
 
         return self.transformer(
             hidden_states=latents,
-            timestep=timestep.to(device=latents.device, dtype=latents.dtype) / 1000,
+            timestep=timestep / 1000,
             guidance=guidance,
-            pooled_projections=pooled_prompt_embeds,
-            encoder_hidden_states=prompt_embeds,
-            txt_ids=text_ids,
-            img_ids=latent_image_ids,
-            joint_attention_kwargs=joint_attention_kwargs or {},
+            pooled_projections=pooled,
+            encoder_hidden_states=condition_tokens,
+            txt_ids=txt_ids,
+            img_ids=img_ids,
+            joint_attention_kwargs=joint_attention_kwargs,
             return_dict=False,
         )[0]

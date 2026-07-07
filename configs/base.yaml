@@ -9,17 +9,39 @@ data:
   batch_size: 2
   num_workers: 0
 
+style_encoder:
+  pretrained_path:
+  freeze: true
+
 model:
   name: font_pipeline
+  mode: baseline
   image_channels: 3
-  image_encoder_path: /data/zhengziyu/models/siglip-so400m-patch14-384
+  image_encoder_path:
+  dino_model_path: /data/zhengziyu/models/dinov2-base
   condition_dim: 4096
   image_embedding_dim: 1152
   condition_tokens: 128
   condition_heads: 8
   condition_query_tokens: 32
+  use_glyph_prior: false
+  use_retrieval_prior: false
+  font_db_path:
+  retrieval_top_k: 1
+  retrieval_coarse_k: 32
+  content_prior_image_size: 1024
+  content_prior_font_root:
+  content_prior_blend_temperature: 1.0
+  content_prior_cache: true
+  glyph_tokens: 32
+  glyph_max_length: 64
+  glyph_heads: 8
+  glyph_layers: 2
+  radical_map_path:
   decoder: flux
   flux_model_path: /data/zhengziyu/models/FLUX.1-dev
+  use_routed_conditioning: true
+  routed_initial_gates: [1.0, 1.0, 1.0]
 
 train:
   epochs: 1
